@@ -1,4 +1,6 @@
-.streamlit/secrets.toml
+.streamlit/*
 .venv
 __pycache__
 .devcontainer
+test_email.py
+# Temporary files

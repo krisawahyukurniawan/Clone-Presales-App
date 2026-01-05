@@ -38,9 +38,6 @@ if not st.session_state.update_dismissed_v1_5:
         * **Lebih Stabil:** Koneksi langsung ke database kantor.
         * **Fitur Sama:** Tampilan dan cara input tetap sama persis seperti sebelumnya.
         """)
-        if st.button("Dismiss", key="dismiss_update_v1_5"):
-            st.session_state.update_dismissed_v1_5 = True
-            st.rerun()
     st.markdown("---")
 
 # ==============================================================================
