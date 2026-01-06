@@ -3,17 +3,6 @@ import pandas as pd
 import numpy as np
 import utils
 
-# ==============================================================================
-# KONFIGURASI HALAMAN (WAJIB PERTAMA)
-# ==============================================================================
-st.set_page_config(
-    page_title="Presales App - SISINDOKOM",
-    page_icon=":clipboard:",
-    initial_sidebar_state="expanded",
-    layout="wide"
-)
-
-import backend as db
 
 # ==============================================================================
 # STATE & NOTIFIKASI
