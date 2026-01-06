@@ -14,11 +14,14 @@ conn = st.connection("postgresql", type="sql")
 
 # 2. EMAIL UTILITIES
 def send_email_notification(recipient_email, subject, body_html):
-    # GANTI DENGAN KREDENSIAL ASLI ANDA (Sama seperti di main.py sebelumnya)
-    SMTP_SERVER = "smtp.gmail.com"
-    SMTP_PORT = 587
-    SENDER_EMAIL = "krisawahyukurniawan@gmail.com" 
-    SENDER_PASSWORD = "wlto qllo miat hljv" # App Password
+    # Mengambil kredensial dari st.secrets (aman)
+    try:
+        SMTP_SERVER = st.secrets["smtp"]["server"]
+        SMTP_PORT = st.secrets["smtp"]["port"]
+        SENDER_EMAIL = st.secrets["smtp"]["email"]
+        SENDER_PASSWORD = st.secrets["smtp"]["password"]
+    except Exception as e:
+        return {"status": 500, "message": "Konfigurasi SMTP tidak ditemukan di secrets.toml"}
 
     try:
         msg = MIMEMultipart()
@@ -117,6 +120,31 @@ def add_multi_line_opportunity(parent_data, product_lines):
             created_at = datetime.now()
             created_uids = []
             
+            # --- [BARU] INSERT KE HEADER SALES (Integrasi ke Sales App) ---
+            # Kita cek dulu apakah ID ini sudah ada di sales_opportunities
+            # Jika belum, kita buat.
+            check_header = text("SELECT opportunity_id FROM sales_opportunities WHERE opportunity_id = :oid")
+            if not session.execute(check_header, {"oid": new_opp_id}).first():
+                ins_header = text("""
+                    INSERT INTO sales_opportunities (
+                        opportunity_id, opportunity_name, salesgroup_id, sales_name, 
+                        stage, created_at, updated_at
+                        -- selling_price default 0 atau null, nanti diisi Sales
+                    ) VALUES (
+                        :oid, :oname, :sgid, :sname, 
+                        :stg, :now, :now
+                    )
+                """)
+                session.execute(ins_header, {
+                    "oid": new_opp_id,
+                    "oname": parent_data['opportunity_name'],
+                    "sgid": parent_data['salesgroup_id'],
+                    "sname": parent_data['sales_name'],
+                    "stg": parent_data.get('stage', 'Open'),
+                    "now": created_at
+                })
+            # --------------------------------------------------------------
+            
             # C. Loop Insert Lines
             for i, line in enumerate(product_lines):
                 # Cari IDs
@@ -133,20 +161,7 @@ def add_multi_line_opportunity(parent_data, product_lines):
                 
                 product_id_code = f"{pid}{sol}{svc}{br_code}".replace(" ", "").upper()
                 uid = f"{new_opp_id}-{product_id_code}-{timestamp_now}{i}"
-                
-                # Insert Opportunity
-                ins_opp = text("""
-                    INSERT INTO opportunities (
-                        uid, opportunity_id, product_id, presales_name, salesgroup_id, sales_name, 
-                        responsible_name, opportunity_name, start_date, company_name, 
-                        vertical_industry, pillar, solution, service, brand, channel, 
-                        distributor_name, cost, notes, stage, created_at, updated_at
-                    ) VALUES (
-                        :uid, :oid, :pid, :pname, :sgid, :sname, :pam, :oname, :sdate, :cname,
-                        :vi, :plr, :sol, :svc, :br, :ch, :dist, :cost, :note, 'Open', :now, :now
-                    )
-                """)
-                
+
                 session.execute(text("""
                     INSERT INTO opportunities (
                         uid, opportunity_id, product_id, presales_name, salesgroup_id, sales_name, 
@@ -160,36 +175,22 @@ def add_multi_line_opportunity(parent_data, product_lines):
                         :dist, :cost, :note, :stage_val, :s_note, :now, :now
                     )
                 """), {
-                    "uid": uid, 
-                    "oid": new_opp_id, 
-                    "pid": product_id_code,
-                    "pname": parent_data['presales_name'], 
-                    "sgid": parent_data['salesgroup_id'], 
-                    "sname": parent_data['sales_name'],
-                    "pam": parent_data['responsible_name'], 
-                    "oname": parent_data['opportunity_name'], 
-                    "sdate": parent_data['start_date'],
-                    "cname": parent_data['company_name'], 
-                    "vi": parent_data['vertical_industry'],
-                    "plr": line['pillar'], 
-                    "sol": line['solution'], 
-                    "svc": line['service'], 
-                    "br": line.get('brand'),
-                    "ch": line.get('channel'), 
-                    "dist": line.get('distributor_name'), 
-                    "cost": line.get('cost', 0),
-                    "note": line.get('notes', ''), 
+                    "uid": uid, "oid": new_opp_id, "pid": product_id_code,
+                    "pname": parent_data['presales_name'], "sgid": parent_data['salesgroup_id'], 
+                    "sname": parent_data['sales_name'], "pam": parent_data['responsible_name'], 
+                    "oname": parent_data['opportunity_name'], "sdate": parent_data['start_date'],
+                    "cname": parent_data['company_name'], "vi": parent_data['vertical_industry'],
+                    "plr": line['pillar'], "sol": line['solution'], "svc": line['service'], 
+                    "br": line.get('brand'), "ch": line.get('channel'), "dist": line.get('distributor_name'), 
+                    "cost": line.get('cost', 0), "note": line.get('notes', ''), 
                     "stage_val": parent_data.get('stage', 'Open'),
-                    
-                    # --- TAMBAHAN BARU ---
                     "s_note": parent_data.get('stage_notes', ''), 
-                    
                     "now": created_at
                 })
                 
                 created_uids.append({"uid": uid, "opportunity_id": new_opp_id})
             
-            # Log
+            # Log Activity (TETAP SAMA)
             log_q = text("INSERT INTO activity_logs (timestamp, opportunity_name, user_name, action, field, new_value) VALUES (:ts, :oname, :user, 'CREATE', 'New Opportunity', :val)")
             session.execute(log_q, {
                 "ts": created_at, "oname": parent_data['opportunity_name'], 
@@ -278,47 +279,60 @@ def update_full_opportunity(payload):
     except Exception as e:
         return {"status": 500, "message": str(e)}
     
-def update_opportunity_stage_bulk(opp_id, new_stage, stage_notes, changed_date, user):
-    """
-    Mengupdate Stage, Notes, dan Tanggal Perubahan secara manual.
-    """
+def update_opportunity_stage_bulk_enhanced(opp_id, new_stage, notes, manual_date, user, closing_reason=None):
     try:
         with conn.session as session:
-            # 1. Ambil stage lama untuk log
-            old_res = session.execute(
-                text("SELECT stage FROM opportunities WHERE opportunity_id=:oid LIMIT 1"), 
-                {"oid": opp_id}
-            ).mappings().first()
-            old_stage = old_res['stage'] if old_res else "Unknown"
+            # 1. Update Tabel Opportunities (Detail) - KODE LAMA
+            if closing_reason:
+                query_upd = text("""
+                    UPDATE opportunities 
+                    SET stage = :stg, stage_notes = :note, closing_reason = :reason, closing_notes = :note, updated_at = :date
+                    WHERE opportunity_id = :oid
+                """)
+                params = {"stg": new_stage, "note": notes, "reason": closing_reason, "date": manual_date, "oid": opp_id}
+            else:
+                query_upd = text("""
+                    UPDATE opportunities 
+                    SET stage = :stg, stage_notes = :note, updated_at = :date
+                    WHERE opportunity_id = :oid
+                """)
+                params = {"stg": new_stage, "note": notes, "date": manual_date, "oid": opp_id}
+            
+            session.execute(query_upd, params)
 
-            # 2. Update dengan Tanggal Manual (:s_date)
-            query = text("""
-                UPDATE opportunities 
-                SET stage = :stg, 
-                    stage_notes = :note, 
-                    stage_changed_date = :s_date, 
-                    updated_at = NOW() 
-                WHERE opportunity_id = :oid
+            # --- [BARU] SYNC UPDATE KE TABEL SALES_OPPORTUNITIES (HEADER) ---
+            # Agar Sales App juga melihat perubahan status ini
+            if closing_reason:
+                query_sales = text("""
+                    UPDATE sales_opportunities
+                    SET stage = :stg, closing_reason = :reason, sales_notes = :note, updated_at = :date
+                    WHERE opportunity_id = :oid
+                """)
+            else:
+                query_sales = text("""
+                    UPDATE sales_opportunities
+                    SET stage = :stg, sales_notes = :note, updated_at = :date
+                    WHERE opportunity_id = :oid
+                """)
+            
+            # Gunakan parameter yang sama karena nama kolom & valuenya cocok
+            session.execute(query_sales, params)
+            # ---------------------------------------------------------------
+
+            # 2. Log Activity (TETAP SAMA)
+            log_msg = f"Stage updated to {new_stage}"
+            if closing_reason:
+                log_msg += f" (Reason: {closing_reason})"
+            
+            query_log = text("""
+                INSERT INTO activity_logs (timestamp, opportunity_name, user_name, action, field, new_value)
+                VALUES (NOW(), :oid, :usr, 'UPDATE', 'Stage Progression', :val)
             """)
-            
-            session.execute(query, {
-                "stg": new_stage, 
-                "note": stage_notes, 
-                "s_date": changed_date,  # <--- DATA DARI INPUT USER
-                "oid": opp_id
-            })
-            
-            # 3. Log Activity
-            if old_stage != new_stage:
-                log_msg = f"{old_stage} -> {new_stage} | Date: {changed_date} | Note: {stage_notes}"
-                session.execute(text("""
-                    INSERT INTO activity_logs (timestamp, opportunity_name, user_name, action, field, new_value) 
-                    VALUES (NOW(), :oid, :usr, 'UPDATE', 'Stage Progression', :val)
-                """), {"oid": opp_id, "usr": user, "val": log_msg})
+            session.execute(query_log, {"oid": opp_id, "usr": user, "val": log_msg})
             
             session.commit()
-            return {"status": 200, "message": f"Stage updated to '{new_stage}' on {changed_date}"}
-            
+            return {"status": 200, "message": "Stage updated successfully."}
+
     except Exception as e:
         return {"status": 500, "message": str(e)}
 
