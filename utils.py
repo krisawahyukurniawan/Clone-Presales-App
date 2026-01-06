@@ -1,6 +1,14 @@
 import streamlit as st
 import pandas as pd
 import time
+
+st.set_page_config(
+    page_title="Presales App - SISINDOKOM",
+    page_icon=":clipboard:",
+    initial_sidebar_state="expanded",
+    layout="wide"
+)
+
 import backend as db
 
 def format_number(number):
